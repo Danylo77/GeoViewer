@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <title>Geo Viewer</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw/dist/leaflet.draw.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <script src="https://unpkg.com/leaflet-draw/dist/leaflet.draw.js"></script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      display: flex;
+      height: 100vh;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+
+    #sidebar {
+      width: 340px;
+      padding: 20px;
+      background: #1e293b;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      border-right: 1px solid #334155;
+    }
+
+    h2 {
+      margin: 0 0 10px 0;
+      font-size: 20px;
+    }
+
+    textarea {
+      width: 100%;
+      height: 200px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      color: #e2e8f0;
+      padding: 10px;
+      resize: none;
+    }
+
+    select, button {
+      padding: 10px;
+      border-radius: 10px;
+      border: none;
+      font-size: 14px;
+    }
+
+    select {
+      background: #0f172a;
+      color: white;
+      border: 1px solid #334155;
+    }
+
+    button {
+      background: #3b82f6;
+      color: white;
+      cursor: pointer;
+      transition: 0.2s;
+    }
+
+    button:hover {
+      background: #2563eb;
+    }
+
+    #map {
+      flex: 1;
+    }
+
+    .status {
+      font-size: 12px;
+      opacity: 0.8;
+    }
+  </style>
+</head>
+
+<body>
+
+<div id="sidebar">
+  <h2>Geo Viewer</h2>
+
+  <textarea id="input" placeholder="Встав GeoJSON або WKT..."></textarea>
+
+  <select id="format">
+    <option value="geojson">GeoJSON</option>
+    <option value="wkt">WKT</option>
+  </select>
+
+  <button onclick="sendData()">Відобразити</button>
+
+  <div class="status" id="status">Очікування...</div>
+
+  <!--  <div style="display: flex; gap: 8px;">-->
+  <!--    <button id="draw-point" title="Draw Point">Point</button>-->
+  <!--    <button id="draw-line" title="Draw Line">Line</button>-->
+  <!--    <button id="draw-polygon" title="Draw Polygon">Polygon</button>-->
+  <!--  </div>-->
+
+  <div id="layers-list" style="margin-top: 10px;"></div>
+
+  <label for="basemap">Базова карта:</label>
+  <select id="basemap" style="margin-bottom: 10px;">
+    <option value="osm">OpenStreetMap</option>
+    <option value="esri">Esri World Imagery</option>
+    <option value="carto">CartoDB Voyager</option>
+  </select>
+
+  <label for="unit">Одиниці виміру:</label>
+  <select id="unit">
+    <option value="meters">м</option>
+    <option value="kilometers">км</option>
+    <option value="miles">мили</option>
+    <option value="feet">фути</option>
+  </select>
+</div>
+
+<div id="map"></div>
+
+<script>
+  // карта
+  const map = L.map('map').setView([49.84, 24.03], 12);
+
+  const basemaps = {
+    osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OSM'
+    }),
+    esri: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      attribution: 'Tiles &copy; Esri'
+    }),
+    carto: L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; CartoDB'
+    })
+  };
+
+  let currentBasemap = basemaps.osm.addTo(map);
+
+  document.getElementById('basemap').addEventListener('change', function(e) {
+    map.removeLayer(currentBasemap);
+    currentBasemap = basemaps[e.target.value].addTo(map);
+  });
+
+  // L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  //   attribution: '&copy; OSM'
+  // }).addTo(map);
+
+  let layers = [];
+
+
+  function renderLayersList() {
+    const listDiv = document.getElementById('layers-list');
+    listDiv.innerHTML = '';
+    layers.forEach((layerObj, idx) => {
+      const div = document.createElement('div');
+      div.style.display = 'flex';
+      div.style.justifyContent = 'space-between';
+      div.style.alignItems = 'center';
+      div.style.marginBottom = '6px';
+
+      const label = document.createElement('span');
+      label.textContent = `Шар ${idx + 1}`;
+      div.appendChild(label);
+
+      const btn = document.createElement('button');
+      btn.textContent = 'Видалити';
+      btn.style.background = '#ef4444';
+      btn.style.marginLeft = '10px';
+      btn.onclick = () => removeLayer(idx);
+      div.appendChild(btn);
+
+      listDiv.appendChild(div);
+    });
+  }
+
+  function removeLayer(idx) {
+    map.removeLayer(layers[idx].layer);
+    layers.splice(idx, 1);
+    renderLayersList();
+  }
+
+  async function sendData() {
+    const input = document.getElementById("input").value;
+    const format = document.getElementById("format").value;
+    const status = document.getElementById("status");
+
+    status.innerText = "⏳ Обробка...";
+
+    try {
+      const res = await fetch("http://localhost:8080/convert", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          format: format,
+          data: input
+        })
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error("Server error: " + errText);
+      }
+
+      const geojson = await res.json();
+
+      const geoLayer = createGeoLayer(geojson).addTo(map);
+      layers.push({ layer: geoLayer });
+      renderLayersList();
+
+      // Use fitBounds only if bounds are valid
+      const bounds = geoLayer.getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds);
+      }
+
+      status.innerText = "✅ Успішно відображено";
+
+    } catch (e) {
+      console.error(e);
+      status.innerText = "❌ Помилка";
+      alert("Помилка при обробці даних: " + e.message);
+    }
+  }
+
+
+  // Add Leaflet.draw toolbar to the map
+  const drawControl = new L.Control.Draw({
+    draw: {
+      marker: true,
+      polyline: true,
+      polygon: true,
+      circle: false,
+      rectangle: false,
+      circlemarker: false
+    },
+    edit: false
+  });
+  map.addControl(drawControl);
+
+  // Remove enableDraw and button event code
+
+  // Keep the draw created handler as is
+  map.on(L.Draw.Event.CREATED, function (e) {
+    const layer = e.layer;
+    const geojson = layer.toGeoJSON();
+    const geoLayer = createGeoLayer(geojson).addTo(map);
+    layers.push({ layer: geoLayer });
+    renderLayersList();
+    map.fitBounds(geoLayer.getBounds());
+  });
+
+  // Helper to format measurement
+  function formatMeasurement(type, value, unit) {
+    if (type === 'LineString') {
+      return `Довжина: ${value.toLocaleString(undefined, {maximumFractionDigits: 2})} ${unit}`;
+    }
+    if (type === 'Polygon') {
+      return `Площа: ${value.toLocaleString(undefined, {maximumFractionDigits: 2})} ${unit}\u00B2`;
+    }
+    return '';
+  }
+
+  // Get selected unit
+  function getSelectedUnit() {
+    return document.getElementById('unit').value;
+  }
+
+  // Calculate and bind popup for measurement
+  function bindMeasurementPopup(layer, geojson) {
+    const unit = getSelectedUnit();
+    let content = '';
+    if (!geojson.geometry) return;
+    if (geojson.geometry.type === 'LineString') {
+      const length = turf.length(geojson, {units: unit});
+      content = formatMeasurement('LineString', length, unit);
+    } else if (geojson.geometry.type === 'Polygon') {
+      let area = turf.area(geojson);
+      // Convert area to selected unit
+      if (unit === 'kilometers') area /= 1e6;
+      else if (unit === 'miles') area /= 2.59e6;
+      else if (unit === 'feet') area /= 0.092903;
+      // Default is meters²
+      content = formatMeasurement('Polygon', area, unit);
+    }
+    if (content) layer.bindPopup(content);
+  }
+
+
+  // Update all popups when unit changes
+  document.getElementById('unit').addEventListener('change', () => {
+    layers.forEach(({layer}) => {
+      layer.eachLayer(l => {
+        const geojson = l.toGeoJSON();
+        bindMeasurementPopup(l, geojson);
+      });
+    });
+  });
+
+  // Update geoLayer creation in sendData and draw event:
+  function createGeoLayer(geojson) {
+    return L.geoJSON(geojson, {
+      pointToLayer: (feature, latlng) => {
+        return L.circleMarker(latlng, {
+          radius: 7,
+          fillColor: "#3b82f6",
+          color: "#fff",
+          weight: 2,
+          opacity: 1,
+          fillOpacity: 0.8
+        });
+      },
+      onEachFeature: (feature, layer) => {
+        if (feature.geometry && (feature.geometry.type === 'LineString' || feature.geometry.type === 'Polygon')) {
+          bindMeasurementPopup(layer, feature);
+        } else if (feature.properties) {
+          layer.bindPopup(JSON.stringify(feature.properties));
+        }
+      }
+    });
+  }
+
+</script>
+
+</body>
+</html>
